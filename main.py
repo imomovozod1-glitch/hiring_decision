@@ -1,226 +1,99 @@
 import json
-import re
 import streamlit as st
 from openai import OpenAI
 
-MODEL_NAME = "gpt-5.2"
+# =============================
+# CONFIG
+# =============================
+MODEL_NAME = "gpt-5.2-thinking"
 
-st.set_page_config(page_title="MVR Hiring Decision (Deterministic)", layout="centered")
+st.set_page_config(
+    page_title="MVR Hiring Decision – AI 5.2",
+    layout="centered"
+)
 
 api_key = st.secrets.get("OPENAI_API_KEY")
 if not api_key:
-    st.error("OPENAI_API_KEY secret topilmadi. Streamlit Secrets ga qo‘ying.")
+    st.error("OPENAI_API_KEY topilmadi. Streamlit Secrets ga qo‘ying.")
     st.stop()
 
 client = OpenAI(api_key=api_key)
 
-# -----------------------------
-# 1) GPT faqat EXTRACT qiladi
-# -----------------------------
-EXTRACTION_SYSTEM = """
-You are an MVR (Motor Vehicle Record) extraction agent.
-Read the provided MVR PDF and output ONLY JSON matching the schema.
+# =============================
+# VERY STRICT NORMATIVE
+# =============================
+NORMATIVE_RULES = """
+You are an MVR (Motor Vehicle Record) hiring decision agent.
 
-Rules:
-- Do NOT decide ACCEPT/REJECT.
-- Do NOT guess missing data. If something isn't explicitly present, set it to null/false/empty.
-- Count accidents from the "Accidents" section (each incident date = 1 accident).
-- Extract violations descriptions as written.
-- If the PDF is unreadable or you cannot extract data confidently, set `unreadable_pdf` = true.
+THIS COMPANY POLICY IS EXTREMELY STRICT.
+
+DEFAULT:
+- IF THERE IS ANY DOUBT, AMBIGUITY, OR RISK → REJECT.
+- ACCEPT is allowed ONLY if the record is perfectly clean.
+
+AUTOMATIC REJECT (ANY ONE = REJECT):
+- Any accident history (1 or more accidents, regardless of fault)
+- Any insurance claim
+- Any equipment or inspection violation (including "Operate Uninspected Vehicle")
+- Any CDL status other than VALID (including DISQUALIFIED, SUSPENDED, EXPIRED)
+- Any reference to Drug & Alcohol Clearinghouse issues
+- Failed or refused DOT drug/alcohol test (even if old)
+- DUI / DWI / alcohol / drugs
+- Reckless or careless driving
+- Following too closely / tailgating
+- Texting or handheld phone use
+- Speeding more than 10 mph over limit
+- Hit and run
+- Felony conviction
+- Unlicensed driver
+- Missing or outdated CDL endorsements
+- Expired or missing medical certificate
+
+INTERPRETATION RULES:
+- "ACCIDENT" presence alone = REJECT (do NOT evaluate fault).
+- "DISQUALIFIED" anywhere = REJECT.
+- "PROHIBITED" + "CLEARINGHOUSE" = REJECT.
+- Administrative wording does NOT reduce severity.
+- If PDF text is incomplete or unclear → REJECT.
+
+OUTPUT:
+- Return ONLY valid JSON.
+- No explanations outside JSON.
 """
 
-EXTRACTION_JSON_SCHEMA = {
+# =============================
+# JSON SCHEMA (STRICT)
+# =============================
+TEXT_FORMAT_JSON_SCHEMA = {
     "type": "json_schema",
-    "name": "mvr_extraction",
+    "name": "mvr_hiring_decision",
     "schema": {
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "unreadable_pdf": {"type": "boolean"},
-            "license_status": {"type": ["string", "null"]},  # e.g. VALID / SUSPENDED / REVOKED / etc.
-            "cdl_class": {"type": ["string", "null"]},       # e.g. A / B / C / null
-            "missing_cdl_endorsements": {"type": "boolean"}, # explicit missing endorsements only
-            "medical_cert_expired": {"type": "boolean"},      # true only if clearly expired / expired medical
-            "accident_count": {"type": "integer", "minimum": 0},
-            "violations": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "incident_date": {"type": ["string", "null"]},
-                        "conviction_date": {"type": ["string", "null"]},
-                        "description": {"type": "string"}
-                    },
-                    "required": ["incident_date", "conviction_date", "description"]
-                }
+            "decision": {
+                "type": "string",
+                "enum": ["ACCEPT", "REJECT"]
             },
-            "major_indicators": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "speeding_over_15": {"type": "boolean"},
-                    "tailgating_following_too_closely": {"type": "boolean"},
-                    "texting_handheld_phone": {"type": "boolean"},
-                    "reckless_careless": {"type": "boolean"},
-                    "dui_dwi_alcohol_drugs": {"type": "boolean"},
-                    "hit_and_run": {"type": "boolean"},
-                    "felony_conviction": {"type": "boolean"},
-                    "refused_test": {"type": "boolean"},
-                    "failed_dot_drug_test_no_sap": {"type": "boolean"},
-                    "license_suspended_not_reinstated": {"type": "boolean"}
-                },
-                "required": [
-                    "speeding_over_15",
-                    "tailgating_following_too_closely",
-                    "texting_handheld_phone",
-                    "reckless_careless",
-                    "dui_dwi_alcohol_drugs",
-                    "hit_and_run",
-                    "felony_conviction",
-                    "refused_test",
-                    "failed_dot_drug_test_no_sap",
-                    "license_suspended_not_reinstated"
-                ]
+            "reason": {
+                "type": "string"
+            },
+            "flags": {
+                "type": "array",
+                "items": {"type": "string"}
             }
         },
-        "required": [
-            "unreadable_pdf",
-            "license_status",
-            "cdl_class",
-            "missing_cdl_endorsements",
-            "medical_cert_expired",
-            "accident_count",
-            "violations",
-            "major_indicators"
-        ]
+        "required": ["decision", "reason", "flags"]
     }
 }
 
-# -----------------------------
-# 2) Deterministic policy
-# -----------------------------
-def normalize(s: str) -> str:
-    return re.sub(r"\s+", " ", (s or "")).strip().lower()
-
-def count_uninspected_vehicle(violations) -> int:
-    # match "operate uninspected vehicle" in any casing/spacing
-    c = 0
-    for v in violations or []:
-        desc = normalize(v.get("description", ""))
-        if "operate uninspected vehicle" in desc or "uninspected vehicle" in desc:
-            c += 1
-    return c
-
-def decide_policy(extracted: dict) -> dict:
-    flags = []
-    reasons = []
-
-    # --- HARD FAILS ---
-    if extracted.get("unreadable_pdf"):
-        return {
-            "decision": "REJECT",
-            "reason": "PDF unreadable / insufficient data.",
-            "flags": ["INSUFFICIENT_DATA"]
-        }
-
-    # --- MEDICAL / ENDORSEMENTS (Delay hire) ---
-    if extracted.get("medical_cert_expired"):
-        flags.append("EXPIRED_MEDICAL")
-        reasons.append("Expired medical card – require updated medical.")
-
-    if extracted.get("missing_cdl_endorsements"):
-        flags.append("MISSING_CDL_ENDORSEMENTS")
-        reasons.append("Missing or outdated CDL endorsements.")
-
-    # --- MAJOR VIOLATIONS ---
-    mi = extracted.get("major_indicators", {})
-    major_map = {
-        "speeding_over_15": "SPEEDING_OVER_15",
-        "tailgating_following_too_closely": "TAILGATING",
-        "texting_handheld_phone": "TEXTING_WHILE_DRIVING",
-        "reckless_careless": "RECKLESS_DRIVING",
-        "dui_dwi_alcohol_drugs": "DUI_DWI",
-        "hit_and_run": "HIT_AND_RUN",
-        "felony_conviction": "FELONY_CONVICTION",
-        "refused_test": "REFUSED_DRUG_TEST",
-        "failed_dot_drug_test_no_sap": "FAILED_DOT_DRUG_TEST",
-        "license_suspended_not_reinstated": "LICENSE_SUSPENDED"
-    }
-
-    for key, label in major_map.items():
-        if mi.get(key):
-            flags.append(label)
-            reasons.append(f"Major violation: {label}.")
-
-    # --- MINOR THRESHOLDS ---
-    minor_counts = {
-        "speeding_10_or_less": 2,
-        "improper_lane": 2,
-        "failure_to_yield": 1,
-        "seatbelt": 1
-    }
-
-    observed_minors = extracted.get("minor_counts", {})
-    for k, limit in minor_counts.items():
-        if observed_minors.get(k, 0) > limit:
-            flags.append(f"{k.upper()}_EXCEEDED")
-            reasons.append(f"{k.replace('_',' ')} exceeded allowed threshold ({limit}).")
-
-    # --- ACCIDENTS ---
-    accident_count = extracted.get("accident_count", 0)
-    preventable = extracted.get("preventable_accidents", False)
-
-    if preventable:
-        flags.append("PREVENTABLE_ACCIDENT")
-        reasons.append("Preventable accident – safety review required.")
-
-    # --- INSURANCE CLAIMS ---
-    if extracted.get("insurance_claims"):
-        flags.append("INSURANCE_CLAIM")
-        reasons.append("Insurance claim on record – safety/legal review required.")
-
-    # --- FINAL DECISION ---
-    if reasons:
-        return {
-            "decision": "REJECT",
-            "reason": " | ".join(reasons),
-            "flags": sorted(set(flags))
-        }
-
-    return {
-        "decision": "ACCEPT",
-        "reason": "All checks passed under hiring policy.",
-        "flags": []
-    }
-
-# -----------------------------
-# 3) OpenAI extraction call
-# -----------------------------
-def extract_from_uploaded_pdf(uploaded_file) -> dict:
+# =============================
+# CORE FUNCTION
+# =============================
+def decide_from_uploaded_pdf(uploaded_file):
     pdf_bytes = uploaded_file.getvalue()
     if not pdf_bytes:
-        return {
-            "unreadable_pdf": True,
-            "license_status": None,
-            "cdl_class": None,
-            "missing_cdl_endorsements": False,
-            "medical_cert_expired": False,
-            "accident_count": 0,
-            "violations": [],
-            "major_indicators": {
-                "speeding_over_15": False,
-                "tailgating_following_too_closely": False,
-                "texting_handheld_phone": False,
-                "reckless_careless": False,
-                "dui_dwi_alcohol_drugs": False,
-                "hit_and_run": False,
-                "felony_conviction": False,
-                "refused_test": False,
-                "failed_dot_drug_test_no_sap": False,
-                "license_suspended_not_reinstated": False
-            }
-        }
+        raise ValueError("PDF bo‘sh")
 
     uploaded = client.files.create(
         file=(uploaded_file.name, pdf_bytes, "application/pdf"),
@@ -229,48 +102,59 @@ def extract_from_uploaded_pdf(uploaded_file) -> dict:
 
     resp = client.responses.create(
         model=MODEL_NAME,
+        reasoning={"effort": "xhigh"},
         input=[
-            {"role": "system", "content": EXTRACTION_SYSTEM},
-            {"role": "user", "content": [
-                {"type": "input_text", "text": "Extract MVR facts into the required JSON schema."},
-                {"type": "input_file", "file_id": uploaded.id}
-            ]}
+            {
+                "role": "system",
+                "content": NORMATIVE_RULES
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": (
+                            "Analyze the attached MVR PDF using the company policy. "
+                            "Decide ACCEPT or REJECT. Be extremely strict."
+                        )
+                    },
+                    {
+                        "type": "input_file",
+                        "file_id": uploaded.id
+                    }
+                ]
+            }
         ],
-        text={"format": EXTRACTION_JSON_SCHEMA}
+        text={"format": TEXT_FORMAT_JSON_SCHEMA}
     )
 
     return json.loads(resp.output_text)
 
-# -----------------------------
+# =============================
 # UI
-# -----------------------------
-st.title("🚛 MVR Hiring Decision (Deterministic Policy)")
-st.caption("PDF → GPT faqat faktlarni chiqaradi → qaror Python qoidalari bilan beriladi")
+# =============================
+st.title("🚛 MVR Hiring Decision")
+st.caption("AI 5.2 (Thinking) • Extremely Strict Policy • Default = REJECT")
 
 uploaded_file = st.file_uploader("MVR PDF yuklang", type=["pdf"])
 
-show_debug = st.checkbox("Debug: extracted JSON ni ko‘rsatish", value=False)
-
-if uploaded_file and st.button("🔍 Tahlil qilish", type="primary"):
+if uploaded_file and st.button("🔍 AI bilan tahlil qilish", type="primary"):
     try:
-        with st.spinner("PDF o‘qilmoqda (extract) va policy qo‘llanmoqda..."):
-            extracted = extract_from_uploaded_pdf(uploaded_file)
-            result = decide_policy(extracted)
+        with st.spinner("AI hujjatni tahlil qilmoqda..."):
+            result = decide_from_uploaded_pdf(uploaded_file)
 
         decision = result["decision"]
         reason = result["reason"]
         flags = result["flags"]
 
-        (st.success if decision == "ACCEPT" else st.error)(f"DECISION: {decision}")
+        if decision == "REJECT":
+            st.error(f"DECISION: {decision}")
+        else:
+            st.success(f"DECISION: {decision}")
+
         st.write("**REASON:**", reason)
         st.write("**FLAGS:**", ", ".join(flags) if flags else "None")
-
-        if show_debug:
-            st.divider()
-            st.subheader("Extracted JSON (debug)")
-            st.json(extracted)
 
     except Exception as e:
         st.error("Xatolik yuz berdi")
         st.exception(e)
-
