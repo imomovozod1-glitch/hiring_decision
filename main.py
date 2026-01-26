@@ -140,7 +140,7 @@ uploaded_file = st.file_uploader("MVR PDF yuklang", type=["pdf"])
 
 if uploaded_file and st.button("🔍 AI bilan tahlil qilish", type="primary"):
     try:
-        with st.spinner("AI hujjatni tahlil qilmoqda..."):
+        with st.spinner("Hujjat tahlil qilmoqda..."):
             result = decide_from_uploaded_pdf(uploaded_file)
 
         decision = result["decision"]
@@ -158,4 +158,5 @@ if uploaded_file and st.button("🔍 AI bilan tahlil qilish", type="primary"):
     except Exception as e:
         st.error("Xatolik yuz berdi")
         st.exception(e)
+
 
