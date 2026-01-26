@@ -2,7 +2,7 @@ import json
 import streamlit as st
 from openai import OpenAI
 
-MODEL_NAME = "gpt-5-mini"
+MODEL_NAME = "gpt-5.2"
 
 st.set_page_config(page_title="MVR Hiring Decision", layout="centered")
 
@@ -108,3 +108,4 @@ if uploaded_file and st.button("🔍 Tahlil qilish", type="primary"):
     except Exception as e:
         st.error("Xatolik yuz berdi")
         st.exception(e)
+
