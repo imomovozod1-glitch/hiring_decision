@@ -5,7 +5,7 @@ from openai import OpenAI
 # =============================
 # CONFIG
 # =============================
-MODEL_NAME = "gpt-5.2-thinking"
+MODEL_NAME = "gpt-5.2"
 
 st.set_page_config(
     page_title="MVR Hiring Decision – AI 5.2",
@@ -158,3 +158,4 @@ if uploaded_file and st.button("🔍 AI bilan tahlil qilish", type="primary"):
     except Exception as e:
         st.error("Xatolik yuz berdi")
         st.exception(e)
+
