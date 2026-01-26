@@ -116,70 +116,81 @@ def decide_policy(extracted: dict) -> dict:
     flags = []
     reasons = []
 
-    if extracted.get("unreadable_pdf") is True:
+    # --- HARD FAILS ---
+    if extracted.get("unreadable_pdf"):
         return {
             "decision": "REJECT",
             "reason": "PDF unreadable / insufficient data.",
             "flags": ["INSUFFICIENT_DATA"]
         }
 
-    # Expired medical → REJECT
-    if extracted.get("medical_cert_expired") is True:
+    # --- MEDICAL / ENDORSEMENTS (Delay hire) ---
+    if extracted.get("medical_cert_expired"):
         flags.append("EXPIRED_MEDICAL")
-        reasons.append("Expired medical certificate.")
+        reasons.append("Expired medical card – require updated medical.")
 
-    # Missing endorsements → REJECT
-    if extracted.get("missing_cdl_endorsements") is True:
-        flags.append("MISSING_ENDORSEMENTS")
-        reasons.append("Missing required CDL endorsements.")
+    if extracted.get("missing_cdl_endorsements"):
+        flags.append("MISSING_CDL_ENDORSEMENTS")
+        reasons.append("Missing or outdated CDL endorsements.")
 
-    # License suspended not reinstated → REJECT
-    mi = extracted.get("major_indicators", {}) or {}
-    if mi.get("license_suspended_not_reinstated") is True:
-        flags.append("LICENSE_SUSPENDED")
-        reasons.append("License suspended (not reinstated).")
+    # --- MAJOR VIOLATIONS ---
+    mi = extracted.get("major_indicators", {})
+    major_map = {
+        "speeding_over_15": "SPEEDING_OVER_15",
+        "tailgating_following_too_closely": "TAILGATING",
+        "texting_handheld_phone": "TEXTING_WHILE_DRIVING",
+        "reckless_careless": "RECKLESS_DRIVING",
+        "dui_dwi_alcohol_drugs": "DUI_DWI",
+        "hit_and_run": "HIT_AND_RUN",
+        "felony_conviction": "FELONY_CONVICTION",
+        "refused_test": "REFUSED_DRUG_TEST",
+        "failed_dot_drug_test_no_sap": "FAILED_DOT_DRUG_TEST",
+        "license_suspended_not_reinstated": "LICENSE_SUSPENDED"
+    }
 
-    # AUTOMATIC REJECT majors (your list)
-    major_map = [
-        ("speeding_over_15", "SPEEDING_OVER_15"),
-        ("tailgating_following_too_closely", "FOLLOWING_TOO_CLOSELY"),
-        ("texting_handheld_phone", "TEXTING_HANDHELD_PHONE"),
-        ("reckless_careless", "RECKLESS_CARELESS"),
-        ("dui_dwi_alcohol_drugs", "DUI_DWI"),
-        ("hit_and_run", "HIT_AND_RUN"),
-        ("felony_conviction", "FELONY_CONVICTION"),
-        ("refused_test", "REFUSED_TEST"),
-        ("failed_dot_drug_test_no_sap", "FAILED_DOT_DRUG_TEST_NO_SAP"),
-    ]
-    for key, flag in major_map:
-        if mi.get(key) is True:
-            flags.append(flag)
-            reasons.append(f"Major violation indicator: {flag}.")
+    for key, label in major_map.items():
+        if mi.get(key):
+            flags.append(label)
+            reasons.append(f"Major violation: {label}.")
 
-    # STRICT POLICY ADDITIONS (as you requested)
-    # Accident count >= 2 → REJECT (regardless of fault wording)
-    accident_count = int(extracted.get("accident_count") or 0)
-    if accident_count >= 2:
-        flags.append("ACCIDENTS_2_PLUS")
-        reasons.append(f"Accident count is {accident_count} (>=2).")
+    # --- MINOR THRESHOLDS ---
+    minor_counts = {
+        "speeding_10_or_less": 2,
+        "improper_lane": 2,
+        "failure_to_yield": 1,
+        "seatbelt": 1
+    }
 
-    # Operate uninspected vehicle >=2 → REJECT
-    uninspected_count = count_uninspected_vehicle(extracted.get("violations"))
-    if uninspected_count >= 2:
-        flags.append("UNINSPECTED_VEHICLE_2_PLUS")
-        reasons.append(f"Operate uninspected vehicle count is {uninspected_count} (>=2).")
+    observed_minors = extracted.get("minor_counts", {})
+    for k, limit in minor_counts.items():
+        if observed_minors.get(k, 0) > limit:
+            flags.append(f"{k.upper()}_EXCEEDED")
+            reasons.append(f"{k.replace('_',' ')} exceeded allowed threshold ({limit}).")
 
-    # Final decision
+    # --- ACCIDENTS ---
+    accident_count = extracted.get("accident_count", 0)
+    preventable = extracted.get("preventable_accidents", False)
+
+    if preventable:
+        flags.append("PREVENTABLE_ACCIDENT")
+        reasons.append("Preventable accident – safety review required.")
+
+    # --- INSURANCE CLAIMS ---
+    if extracted.get("insurance_claims"):
+        flags.append("INSURANCE_CLAIM")
+        reasons.append("Insurance claim on record – safety/legal review required.")
+
+    # --- FINAL DECISION ---
     if reasons:
         return {
             "decision": "REJECT",
             "reason": " | ".join(reasons),
-            "flags": sorted(list(set(flags)))
+            "flags": sorted(set(flags))
         }
 
     return {
         "decision": "ACCEPT",
-        "reason": "No reject triggers found under current policy.",
+        "reason": "All checks passed under hiring policy.",
         "flags": []
     }
 
@@ -262,3 +273,4 @@ if uploaded_file and st.button("🔍 Tahlil qilish", type="primary"):
     except Exception as e:
         st.error("Xatolik yuz berdi")
         st.exception(e)
+
