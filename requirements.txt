@@ -1,6 +1,6 @@
-streamlit
-yaml
-openai
-fitz
-re
-json
+streamlit>=1.30.0
+PyMuPDF>=1.23.0
+openai>=1.10.0
+PyYAML>=6.0
+
+
