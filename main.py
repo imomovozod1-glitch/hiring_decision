@@ -73,9 +73,7 @@ if uploaded_file:
     if st.button("🚀 Tahlilni Boshlash", type="primary"):
 
         with st.status("AI Agent ishlamoqda...", expanded=True) as status:
-            st.write("YAML qoidalari yuklandi...")
-            st.write("PDF ma'lumotlari o'qilmoqda...")
-            st.write("Qoidabuzarliklar solishtirilmoqda...")
+            st.write("MVR Tekshirilmoqda...")
 
             # YAMLni string ko'rinishiga o'tkazish (Prompt uchun)
             rules_str = yaml.dump(rules_data)
@@ -169,4 +167,5 @@ if uploaded_file:
             except Exception as e:
                 status.update(label="Xatolik!", state="error")
                 st.error(f"Tizim xatosi: {e}")
+
 
