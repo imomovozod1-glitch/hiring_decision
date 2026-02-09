@@ -69,9 +69,6 @@ if uploaded_file:
     # 1. Matnni olish
     pdf_text = extract_text_from_pdf(uploaded_file)
 
-    with st.expander("📄 PDF ichidagi tozalangan ma'lumotni ko'rish"):
-        st.write(pdf_text)
-
     # 2. Tahlil tugmasi
     if st.button("🚀 Tahlilni Boshlash", type="primary"):
 
@@ -102,7 +99,7 @@ if uploaded_file:
                     {"violation": "Nomi", "severity": "Major/Minor", "rule_matched": "YAMLdagi qoida"}
                 ],
                 "missing_docs": ["Hujjat nomi" (agar Delay bo'lsa)],
-                "recruiter_action": "Recruiterga aniq ko'rsatma"
+                "recruiter_action": "Recruiterga aniq ko'rsatma/Inson tilida"
             }
             """
 
@@ -172,3 +169,4 @@ if uploaded_file:
             except Exception as e:
                 status.update(label="Xatolik!", state="error")
                 st.error(f"Tizim xatosi: {e}")
+
