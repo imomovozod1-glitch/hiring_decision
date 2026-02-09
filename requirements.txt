@@ -1,2 +1,6 @@
 streamlit
+yaml
 openai
+fitz
+re
+json
