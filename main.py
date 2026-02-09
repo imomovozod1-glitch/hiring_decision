@@ -1,202 +1,174 @@
-import json
 import streamlit as st
+import fitz  # PyMuPDF
 from openai import OpenAI
+import yaml
+import json
+import re
 
-# =============================
-# CONFIG
-# =============================
-MODEL = "gpt-5.2"
+# --- SOZLAMALAR ---
+# API Kalitni shu yerga qo'ying
+OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY")
+client = OpenAI(api_key=OPENAI_API_KEY)
 
-st.set_page_config(page_title="MVR Checker – Multi Agent", layout="centered")
 
-api_key = st.secrets.get("OPENAI_API_KEY")
-if not api_key:
-    st.error("OPENAI_API_KEY topilmadi")
-    st.stop()
+# --- FUNKSIYALAR ---
 
-client = OpenAI(api_key=api_key)
-
-# =============================
-# AGENT 1 – FACT EXTRACTOR
-# =============================
-EXTRACTOR_PROMPT = """
-You are Agent 1: MVR FACT EXTRACTOR.
-
-Read the MVR PDF and extract ONLY objective facts.
-Do NOT make hiring decisions.
-Do NOT interpret severity.
-
-Extract:
-- accident_count (integer)
-- violations (list of strings exactly as written)
-- cdl_status (VALID / DISQUALIFIED / SUSPENDED / OTHER)
-- medical_status (VALID / EXPIRED / UNKNOWN)
-- clearinghouse_issue (true/false)
-- unlicensed_driver (true/false)
-
-If anything is unclear, set conservative values (UNKNOWN / true).
-
-Return ONLY JSON.
-"""
-
-EXTRACT_SCHEMA = {
-    "type": "json_schema",
-    "name": "mvr_extract",
-    "schema": {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "accident_count": {"type": "integer"},
-            "violations": {"type": "array", "items": {"type": "string"}},
-            "cdl_status": {"type": "string"},
-            "medical_status": {"type": "string"},
-            "clearinghouse_issue": {"type": "boolean"},
-            "unlicensed_driver": {"type": "boolean"}
-        },
-        "required": [
-            "accident_count",
-            "violations",
-            "cdl_status",
-            "medical_status",
-            "clearinghouse_issue",
-            "unlicensed_driver"
-        ]
-    }
-}
-
-# =============================
-# AGENT 2 – VALIDATOR
-# =============================
-VALIDATOR_PROMPT = """
-You are Agent 2: FACT VALIDATOR.
-
-Review extracted facts.
-Your job:
-- Assume risk if ambiguity exists
-- If accident_count >= 1 → confirm
-- If words like DISQUALIFIED / PROHIBITED / CLEARINGHOUSE appear → confirm issue
-- If unsure → escalate risk (true)
-
-Return corrected JSON only.
-"""
-
-# =============================
-# AGENT 3 – DECISION MAKER
-# =============================
-DECISION_PROMPT = """
-You are Agent 3: FINAL DECISION MAKER.
-
-COMPANY POLICY (EXTREMELY STRICT):
-
-REJECT if ANY of the following:
-- accident_count >= 1
-- any violation exists
-- cdl_status != VALID
-- medical_status != VALID
-- clearinghouse_issue == true
-- unlicensed_driver == true
-- any doubt or ambiguity
-
-ACCEPT only if record is perfectly clean.
-
-Return ONLY JSON.
-"""
-
-DECISION_SCHEMA = {
-    "type": "json_schema",
-    "name": "mvr_decision",
-    "schema": {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "decision": {"type": "string", "enum": ["ACCEPT", "REJECT"]},
-            "reason": {"type": "string"},
-            "flags": {"type": "array", "items": {"type": "string"}}
-        },
-        "required": ["decision", "reason", "flags"]
-    }
-}
-
-# =============================
-# CORE PIPELINE
-# =============================
-def run_multi_agent_pipeline(uploaded_file):
-    pdf_bytes = uploaded_file.getvalue()
-
-    uploaded = client.files.create(
-        file=(uploaded_file.name, pdf_bytes, "application/pdf"),
-        purpose="user_data"
-    )
-
-    # -------- Agent 1 --------
-    extract_resp = client.responses.create(
-        model=MODEL,
-        reasoning={"effort": "high"},
-        input=[
-            {"role": "system", "content": EXTRACTOR_PROMPT},
-            {"role": "user", "content": [
-                {"type": "input_text", "text": "Extract facts from this MVR PDF."},
-                {"type": "input_file", "file_id": uploaded.id}
-            ]}
-        ],
-        text={"format": EXTRACT_SCHEMA}
-    )
-
-    extracted = json.loads(extract_resp.output_text)
-
-    # -------- Agent 2 --------
-    validate_resp = client.responses.create(
-        model=MODEL,
-        reasoning={"effort": "medium"},
-        input=[
-            {"role": "system", "content": VALIDATOR_PROMPT},
-            {"role": "user", "content": json.dumps(extracted)}
-        ],
-        text={"format": EXTRACT_SCHEMA}
-    )
-
-    validated = json.loads(validate_resp.output_text)
-
-    # -------- Agent 3 --------
-    decision_resp = client.responses.create(
-        model=MODEL,
-        reasoning={"effort": "xhigh"},
-        input=[
-            {"role": "system", "content": DECISION_PROMPT},
-            {"role": "user", "content": json.dumps(validated)}
-        ],
-        text={"format": DECISION_SCHEMA}
-    )
-
-    return validated, json.loads(decision_resp.output_text)
-
-# =============================
-# UI
-# =============================
-st.title("🚛 MVR Checker – Multi Agent AI")
-st.caption("3 Agent Pipeline • GPT-5.2 Thinking • Default = REJECT")
-
-uploaded_file = st.file_uploader("MVR PDF yuklang", type=["pdf"])
-debug = st.checkbox("Debug: Agent outputlarni ko‘rsatish")
-
-if uploaded_file and st.button("🔍 Tahlil qilish", type="primary"):
+def load_rules(filepath="hiring_rules.yaml"):
+    """YAML faylidan qoidalarni o'qiydi"""
     try:
-        with st.spinner("3 ta AI agent ishlayapti..."):
-            facts, decision = run_multi_agent_pipeline(uploaded_file)
-
-        if decision["decision"] == "REJECT":
-            st.error(f"DECISION: {decision['decision']}")
-        else:
-            st.success(f"DECISION: {decision['decision']}")
-
-        st.write("**REASON:**", decision["reason"])
-        st.write("**FLAGS:**", ", ".join(decision["flags"]))
-
-        if debug:
-            st.divider()
-            st.subheader("Validated Facts (Agent 2)")
-            st.json(facts)
-
+        with open(filepath, "r", encoding="utf-8") as file:
+            return yaml.safe_load(file)
+    except FileNotFoundError:
+        st.error(f"Xatolik: '{filepath}' fayli topilmadi. Iltimos, qoidalar faylini yarating.")
+        st.stop()
     except Exception as e:
-        st.error("Xatolik yuz berdi")
-        st.exception(e)
+        st.error(f"YAML faylida xatolik bor: {e}")
+        st.stop()
+
+
+def clean_pdf_text(text):
+    """Disclaimer va ortiqcha huquqiy matnlarni tozalash"""
+    # Disclaimer shablonlari (kerak bo'lsa yanada kuchaytirish mumkin)
+    patterns = [
+        r"Disclaimer: The information contained herein.*?binding in all 50 states\.",
+        r"The User agrees to release.*?dba StarPoint Screening",
+        r"Per the signed Membership Agreement.*?"
+    ]
+
+    cleaned_text = text
+    for pattern in patterns:
+        cleaned_text = re.sub(pattern, "", cleaned_text, flags=re.DOTALL | re.IGNORECASE)
+
+    return re.sub(r'\s+', ' ', cleaned_text).strip()
+
+
+def extract_text_from_pdf(uploaded_file):
+    """PDF fayldan tozalangan matnni oladi"""
+    doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+    text = ""
+    for page in doc:
+        text += page.get_text()
+    return clean_pdf_text(text)
+
+
+# --- ASOSIY INTERFEYS ---
+
+st.set_page_config(page_title="Driver Safety AI", page_icon="🚛", layout="centered")
+
+# Qoidalarni yuklash
+rules_data = load_rules()
+company_name = rules_data['meta']['carrier_name']
+
+st.title(f"🚛 {company_name}")
+st.caption("AI-Powered Driver Qualification System (YAML Configured)")
+
+# Fayl yuklash
+uploaded_file = st.file_uploader("Haydovchi hisobotini yuklang (PDF)", type=["pdf"])
+
+if uploaded_file:
+    # 1. Matnni olish
+    pdf_text = extract_text_from_pdf(uploaded_file)
+
+    with st.expander("📄 PDF ichidagi tozalangan ma'lumotni ko'rish"):
+        st.write(pdf_text)
+
+    # 2. Tahlil tugmasi
+    if st.button("🚀 Tahlilni Boshlash", type="primary"):
+
+        with st.status("AI Agent ishlamoqda...", expanded=True) as status:
+            st.write("YAML qoidalari yuklandi...")
+            st.write("PDF ma'lumotlari o'qilmoqda...")
+            st.write("Qoidabuzarliklar solishtirilmoqda...")
+
+            # YAMLni string ko'rinishiga o'tkazish (Prompt uchun)
+            rules_str = yaml.dump(rules_data)
+
+            # --- PROMPT ---
+            system_prompt = """
+            Siz Safety Manager yordamchisiz. Vazifangiz:
+            1. Berilgan YAML qoidalari (Rules) asosida Nomzod (Candidate) ma'lumotlarini tekshirish.
+            2. Javobni qat'iy JSON formatida qaytarish.
+
+            DIQQAT:
+            - Agar "Hard Stops" ro'yxatidagi birorta qoidabuzarlik bo'lsa -> REJECT.
+            - Agar Yosh (Age) to'g'ri kelmasa -> REJECT.
+            - Agar jami "Minor" qoidabuzarliklar chegaradan (threshold) oshsa -> REJECT.
+
+            JSON STRUKTURASI:
+            {
+                "status": "APPROVE" | "REJECT" | "DELAY" | "REVIEW",
+                "final_score": "Qisqa xulosa (masalan: 2 ta Minor, 1 ta Major)",
+                "violations_found": [
+                    {"violation": "Nomi", "severity": "Major/Minor", "rule_matched": "YAMLdagi qoida"}
+                ],
+                "missing_docs": ["Hujjat nomi" (agar Delay bo'lsa)],
+                "recruiter_action": "Recruiterga aniq ko'rsatma"
+            }
+            """
+
+            user_prompt = f"""
+            --- QOIDALAR (YAML) ---
+            {rules_str}
+
+            --- NOMZOD MA'LUMOTI (PDF) ---
+            {pdf_text}
+            """
+
+            try:
+                # AI Call
+                response = client.chat.completions.create(
+                    model="gpt-5-mini",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    response_format={"type": "json_object"}
+                )
+
+                # Natijani olish
+                result = json.loads(response.choices[0].message.content)
+                status.update(label="Tahlil yakunlandi!", state="complete", expanded=False)
+
+                # --- VIZUALIZATSIYA ---
+                decision = result.get("status", "UNKNOWN").upper()
+                action = result.get("recruiter_action", "")
+                violations = result.get("violations_found", [])
+
+                st.divider()
+
+                # Rangli Statuslar
+                if decision == "REJECT":
+                    st.error(f"⛔ QAROR: {decision}")
+                elif decision == "APPROVE":
+                    st.success(f"✅ QAROR: {decision}")
+                elif decision == "DELAY":
+                    st.warning(f"⚠️ QAROR: {decision} (Hujjatlar yetishmaydi)")
+                elif decision == "REVIEW":
+                    st.info(f"👀 QAROR: {decision} (Qo'shimcha tekshiruv kerak)")
+                else:
+                    st.write(f"QAROR: {decision}")
+
+                # Tafsilotlar bo'limi
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.subheader("⚠️ Topilgan muammolar")
+                    if violations:
+                        for v in violations:
+                            severity_icon = "🔴" if v['severity'] == "Major" else "🟡"
+                            st.markdown(f"{severity_icon} **{v['violation']}**")
+                            st.caption(f"Qoida: {v['rule_matched']} | Daraja: {v['severity']}")
+                    else:
+                        st.success("Toza! Qoidabuzarliklar topilmadi.")
+
+                with col2:
+                    st.subheader("📝 Ko'rsatma")
+                    st.info(action)
+                    if result.get("missing_docs"):
+                        st.markdown("**Yetishmayotgan hujjatlar:**")
+                        for doc in result["missing_docs"]:
+                            st.markdown(f"- {doc}")
+
+            except Exception as e:
+                status.update(label="Xatolik!", state="error")
+                st.error(f"Tizim xatosi: {e}")
