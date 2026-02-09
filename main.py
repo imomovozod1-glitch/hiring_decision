@@ -5,30 +5,30 @@ import yaml
 import json
 import re
 
-# --- SOZLAMALAR ---
-# API Kalitni shu yerga qo'ying
+# --- SETTINGS ---
+# Put the API key in Streamlit Secrets
 OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY")
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 
-# --- FUNKSIYALAR ---
+# --- FUNCTIONS ---
 
 def load_rules(filepath="hiring_rules.yaml"):
-    """YAML faylidan qoidalarni o'qiydi"""
+    """Loads rules from a YAML file"""
     try:
         with open(filepath, "r", encoding="utf-8") as file:
             return yaml.safe_load(file)
     except FileNotFoundError:
-        st.error(f"Xatolik: '{filepath}' fayli topilmadi. Iltimos, qoidalar faylini yarating.")
+        st.error(f"Error: '{filepath}' file not found. Please create the rules file.")
         st.stop()
     except Exception as e:
-        st.error(f"YAML faylida xatolik bor: {e}")
+        st.error(f"There is an error in the YAML file: {e}")
         st.stop()
 
 
 def clean_pdf_text(text):
-    """Disclaimer va ortiqcha huquqiy matnlarni tozalash"""
-    # Disclaimer shablonlari (kerak bo'lsa yanada kuchaytirish mumkin)
+    """Cleans disclaimers and unnecessary legal text"""
+    # Disclaimer patterns (can be extended if needed)
     patterns = [
         r"Disclaimer: The information contained herein.*?binding in all 50 states\.",
         r"The User agrees to release.*?dba StarPoint Screening",
@@ -43,7 +43,7 @@ def clean_pdf_text(text):
 
 
 def extract_text_from_pdf(uploaded_file):
-    """PDF fayldan tozalangan matnni oladi"""
+    """Extracts cleaned text from an uploaded PDF file"""
     doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
     text = ""
     for page in doc:
@@ -51,61 +51,61 @@ def extract_text_from_pdf(uploaded_file):
     return clean_pdf_text(text)
 
 
-# --- ASOSIY INTERFEYS ---
+# --- MAIN UI ---
 
 st.set_page_config(page_title="Driver Safety AI", page_icon="🚛", layout="centered")
 
-# Qoidalarni yuklash
+# Load rules
 rules_data = load_rules()
 company_name = rules_data['meta']['carrier_name']
 
 st.title(f"🚛 {company_name}")
 st.caption("AI-Powered Driver Qualification System (YAML Configured)")
 
-# Fayl yuklash
-uploaded_file = st.file_uploader("Haydovchi hisobotini yuklang (PDF)", type=["pdf"])
+# Upload file
+uploaded_file = st.file_uploader("Upload the driver report (PDF)", type=["pdf"])
 
 if uploaded_file:
-    # 1. Matnni olish
+    # 1. Extract text
     pdf_text = extract_text_from_pdf(uploaded_file)
 
-    # 2. Tahlil tugmasi
-    if st.button("🚀 Tahlilni Boshlash", type="primary"):
+    # 2. Analyze button
+    if st.button("🚀 Start Analysis", type="primary"):
 
-        with st.status("AI Agent ishlamoqda...", expanded=True) as status:
-            st.write("MVR Tekshirilmoqda...")
+        with st.status("AI Agent is running...", expanded=True) as status:
+            st.write("Checking MVR...")
 
-            # YAMLni string ko'rinishiga o'tkazish (Prompt uchun)
+            # Convert YAML to string (for the prompt)
             rules_str = yaml.dump(rules_data)
 
             # --- PROMPT ---
             system_prompt = """
-            Siz Safety Manager yordamchisiz. Vazifangiz:
-            1. Berilgan YAML qoidalari (Rules) asosida Nomzod (Candidate) ma'lumotlarini tekshirish.
-            2. Javobni qat'iy JSON formatida qaytarish.
+            You are a Safety Manager assistant. Your tasks:
+            1. Validate the Candidate information against the provided YAML Rules.
+            2. Return the output strictly in JSON format.
 
-            DIQQAT:
-            - Agar "Hard Stops" ro'yxatidagi birorta qoidabuzarlik bo'lsa -> REJECT.
-            - Agar Yosh (Age) to'g'ri kelmasa -> REJECT.
-            - Agar jami "Minor" qoidabuzarliklar chegaradan (threshold) oshsa -> REJECT.
+            IMPORTANT:
+            - If any violation matches the "Hard Stops" list -> REJECT.
+            - If Age does not match the rule -> REJECT.
+            - If total "Minor" violations exceed the threshold -> REJECT.
 
-            JSON STRUKTURASI:
+            JSON STRUCTURE:
             {
                 "status": "APPROVE" | "REJECT" | "DELAY" | "REVIEW",
-                "final_score": "Qisqa xulosa (masalan: 2 ta Minor, 1 ta Major)",
+                "final_score": "Short summary (e.g., 2 Minor, 1 Major)",
                 "violations_found": [
-                    {"violation": "Nomi", "severity": "Major/Minor", "rule_matched": "YAMLdagi qoida"}
+                    {"violation": "Name", "severity": "Major/Minor", "rule_matched": "Rule from YAML"}
                 ],
-                "missing_docs": ["Hujjat nomi" (agar Delay bo'lsa)],
-                "recruiter_action": "Recruiterga aniq ko'rsatma/Inson tilida"
+                "missing_docs": ["Document name" (if Delay)],
+                "recruiter_action": "Clear instruction for recruiter (plain English)"
             }
             """
 
             user_prompt = f"""
-            --- QOIDALAR (YAML) ---
+            --- RULES (YAML) ---
             {rules_str}
 
-            --- NOMZOD MA'LUMOTI (PDF) ---
+            --- CANDIDATE DATA (PDF) ---
             {pdf_text}
             """
 
@@ -120,52 +120,50 @@ if uploaded_file:
                     response_format={"type": "json_object"}
                 )
 
-                # Natijani olish
+                # Get result
                 result = json.loads(response.choices[0].message.content)
-                status.update(label="Tahlil yakunlandi!", state="complete", expanded=False)
+                status.update(label="Analysis completed!", state="complete", expanded=False)
 
-                # --- VIZUALIZATSIYA ---
+                # --- VISUALIZATION ---
                 decision = result.get("status", "UNKNOWN").upper()
                 action = result.get("recruiter_action", "")
                 violations = result.get("violations_found", [])
 
                 st.divider()
 
-                # Rangli Statuslar
+                # Color-coded statuses
                 if decision == "REJECT":
-                    st.error(f"⛔ QAROR: {decision}")
+                    st.error(f"⛔ DECISION: {decision}")
                 elif decision == "APPROVE":
-                    st.success(f"✅ QAROR: {decision}")
+                    st.success(f"✅ DECISION: {decision}")
                 elif decision == "DELAY":
-                    st.warning(f"⚠️ QAROR: {decision} (Hujjatlar yetishmaydi)")
+                    st.warning(f"⚠️ DECISION: {decision} (Missing documents)")
                 elif decision == "REVIEW":
-                    st.info(f"👀 QAROR: {decision} (Qo'shimcha tekshiruv kerak)")
+                    st.info(f"👀 DECISION: {decision} (Additional review required)")
                 else:
-                    st.write(f"QAROR: {decision}")
+                    st.write(f"DECISION: {decision}")
 
-                # Tafsilotlar bo'limi
+                # Details section
                 col1, col2 = st.columns(2)
 
                 with col1:
-                    st.subheader("⚠️ Topilgan muammolar")
+                    st.subheader("⚠️ Issues Found")
                     if violations:
                         for v in violations:
                             severity_icon = "🔴" if v['severity'] == "Major" else "🟡"
                             st.markdown(f"{severity_icon} **{v['violation']}**")
-                            st.caption(f"Qoida: {v['rule_matched']} | Daraja: {v['severity']}")
+                            st.caption(f"Rule: {v['rule_matched']} | Severity: {v['severity']}")
                     else:
-                        st.success("Toza! Qoidabuzarliklar topilmadi.")
+                        st.success("Clean! No violations found.")
 
                 with col2:
-                    st.subheader("📝 Ko'rsatma")
+                    st.subheader("📝 Recruiter Instructions")
                     st.info(action)
                     if result.get("missing_docs"):
-                        st.markdown("**Yetishmayotgan hujjatlar:**")
+                        st.markdown("**Missing documents:**")
                         for doc in result["missing_docs"]:
                             st.markdown(f"- {doc}")
 
             except Exception as e:
-                status.update(label="Xatolik!", state="error")
-                st.error(f"Tizim xatosi: {e}")
-
-
+                status.update(label="Error!", state="error")
+                st.error(f"System error: {e}")
