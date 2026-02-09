@@ -1,0 +1,251 @@
+meta:
+  carrier_name: "Bipolar Bear Enterprises LLC"
+  scope: "Owner-Operator hiring (Dry Van / Power Only)"
+  basis:
+    - "FMCSA compliance"
+    - "Insurance underwriting rules"
+  output_statuses:
+    - APPROVE
+    - DELAY
+    - REVIEW
+    - REJECT
+
+
+# =========================================================
+# AGE POLICY
+# =========================================================
+age_policy:
+  calculation:
+    method: "floor((current_date - DOB) / 365.25)"
+    fields:
+      - "Date of Birth"
+      - "DOB"
+
+  rules:
+    under_21:
+      range: "<21"
+      severity: "Major"
+      decision: "REJECT"
+      reason: "FMCSA prohibits interstate CMV operation"
+
+    age_21_24:
+      range: "21-24"
+      severity: "Major"
+      decision: "REJECT"
+      reason: "Insurance minimum age is 25"
+
+    age_25_65:
+      range: "25-65"
+      severity: "Acceptable"
+      decision: "PASS_AGE"
+      reason: "Eligible age range"
+
+    over_65:
+      range: ">65"
+      severity: "Moderate"
+      decision: "REVIEW"
+      requirements:
+        - "Recent Medical Certificate"
+        - "3-year MVR"
+        - "Insurance approval"
+        - "Safety Director final decision"
+
+
+# =========================================================
+# GLOBAL THRESHOLDS
+# =========================================================
+thresholds:
+  lookback_years: 3
+  minor_moving_max: 2
+
+
+# =========================================================
+# KEYWORDS MAPPING (Raw MVR → Normalized Violation)
+# =========================================================
+keywords_mapping:
+
+  Speeding_15_PLUS:
+    keywords:
+      - "15 mph over"
+      - "16 mph over"
+      - "17 mph over"
+      - "18 mph over"
+      - "19 mph over"
+      - "20 mph over"
+      - "excessive speed"
+      - "high rate of speed"
+    maps_to: "Speeding 15+ mph over limit"
+    severity: "Major"
+    decision: "REJECT"
+
+  Speeding_11_14:
+    keywords:
+      - "11 mph over"
+      - "12 mph over"
+      - "13 mph over"
+      - "14 mph over"
+    maps_to: "Speeding 11–14 mph over limit"
+    severity: "Major"
+    decision: "REJECT"
+
+  Speeding_6_10:
+    keywords:
+      - "6 mph over"
+      - "7 mph over"
+      - "8 mph over"
+      - "9 mph over"
+      - "10 mph over"
+    maps_to: "Speeding 6–10 mph over limit"
+    severity: "Minor"
+    decision: "ACCEPT_MAX_2"
+
+  Speeding_1_5:
+    keywords:
+      - "1 mph over"
+      - "2 mph over"
+      - "3 mph over"
+      - "4 mph over"
+      - "5 mph over"
+    maps_to: "Speeding 1–5 mph over limit"
+    severity: "Minor"
+    decision: "ACCEPT_MAX_2"
+
+  Reckless_Driving:
+    keywords:
+      - "reckless driving"
+      - "careless driving"
+      - "wanton disregard"
+      - "willful disregard"
+    maps_to: "Reckless or careless driving"
+    severity: "Major"
+    decision: "REJECT"
+
+  Following_Too_Close:
+    keywords:
+      - "following too close"
+      - "tailgating"
+      - "unsafe following distance"
+    maps_to: "Following too closely"
+    severity: "Major"
+    decision: "REJECT"
+
+  Cellphone_Use:
+    keywords:
+      - "hand-held mobile"
+      - "texting while driving"
+      - "cell phone while driving"
+    maps_to: "Handheld cellphone use"
+    severity: "Major"
+    decision: "REJECT"
+
+  DUI_DWI:
+    keywords:
+      - "DUI"
+      - "DWI"
+      - "OWI"
+      - "driving under influence"
+      - "BAC"
+    maps_to: "DUI / DWI"
+    severity: "Major"
+    decision: "REJECT"
+
+  Hit_and_Run:
+    keywords:
+      - "hit and run"
+      - "leaving the scene"
+      - "fail to stop after accident"
+    maps_to: "Hit and Run"
+    severity: "Major"
+    decision: "REJECT"
+
+  False_Logs:
+    keywords:
+      - "false log"
+      - "log falsification"
+      - "false record of duty status"
+    maps_to: "ELD falsification"
+    severity: "Major"
+    decision: "REJECT"
+
+  HOS_Violations:
+    keywords:
+      - "11 hour violation"
+      - "14 hour violation"
+      - "60 hour violation"
+      - "70 hour violation"
+    maps_to: "HOS core violation"
+    severity: "Major"
+    decision: "REJECT"
+
+  Expired_Medical:
+    keywords:
+      - "medical certificate expired"
+      - "expired medical card"
+    maps_to: "Expired Medical Card"
+    severity: "Minor"
+    decision: "DELAY"
+
+  Missing_Endorsement:
+    keywords:
+      - "endorsement missing"
+      - "hazmat expired"
+      - "tank endorsement expired"
+    maps_to: "Missing endorsement"
+    severity: "Minor"
+    decision: "DELAY"
+
+
+# =========================================================
+# DECISION ENGINE (EXECUTION ORDER)
+# =========================================================
+decision_engine:
+
+  step_0_age_check:
+    action: "Apply age_policy.rules"
+    reject_if:
+      - "AGE < 21"
+      - "AGE between 21 and 24"
+    review_if:
+      - "AGE > 65"
+
+  step_1_parse_mvr:
+    action: "Match each MVR line against keywords_mapping"
+    rules:
+      - "Case-insensitive"
+      - "If multiple matches → highest severity wins"
+
+  step_2_hard_stops:
+    reject_if:
+      - "Any Major violation"
+      - "DUI"
+      - "Reckless driving"
+      - "False logs"
+      - "Hit and Run"
+
+  step_3_minor_threshold:
+    reject_if:
+      - "Minor moving violations > 2 within lookback"
+
+  step_4_delay_items:
+    delay_if:
+      - "Expired Medical Card"
+      - "Missing Endorsement"
+
+  step_5_review_items:
+    review_if:
+      - "Preventable accident"
+      - "Insurance claim"
+      - "AGE > 65"
+
+  step_6_approve:
+    approve_if:
+      - "PASS_AGE"
+      - "No Major violations"
+      - "Minor moving violations <= 2"
+      - "No DELAY or REVIEW flags"
+
+  output_priority:
+    - REJECT
+    - DELAY
+    - REVIEW
+    - APPROVE
